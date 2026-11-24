@@ -37,18 +37,35 @@ test("empty and inverted intervals contribute zero", () =>
     0,
   ));
 
-test("local dates account for daylight saving changes", () => {
-  for (const [date, h] of [
-    ["2026-03-08", 23],
-    ["2026-11-01", 25],
+test("local dates account for daylight saving changes including half-hour transitions", () => {
+  for (const [date, zone, h] of [
+    ["2026-03-08", "America/New_York", 23],
+    ["2026-11-01", "America/New_York", 25],
+    ["2026-10-04", "Australia/Lord_Howe", 23.5],
+    ["2026-04-05", "Australia/Lord_Howe", 24.5],
   ]) {
-    const w = dayWindow(date, "America/New_York");
+    const w = dayWindow(date, zone);
     assert.equal((w.end - w.start) / 3600000, h);
   }
+  const lh = dayWindow("2026-10-04", "Australia/Lord_Howe");
+  assert.equal(lh.end - lh.start, 84600000);
+  const partialBucketEvent = {
+    type: "interval",
+    start: new Date(lh.start + 23 * 3600000).toISOString(),
+    end: new Date(lh.end + 1800000).toISOString(),
+    state: "active",
+    domain: "example.org",
+    category: "study",
+  };
+  const r = activityReport([partialBucketEvent], lh.start, lh.end, "Australia/Lord_Howe");
+  assert.equal(r.hours.length, 24);
+  assert.equal(r.hours[23].activeSeconds, 1800);
 });
 
-test("invalid dates are rejected", () =>
-  assert.throws(() => dayWindow("2026-02-30", "UTC")));
+test("invalid and skipped calendar dates are rejected", () => {
+  assert.throws(() => dayWindow("2026-02-30", "UTC"));
+  assert.throws(() => dayWindow("2011-12-30", "Pacific/Apia"));
+});
 
 test("report clips intervals at midnight, aggregates categories, and overlays focus/checkins", () => {
   const { start, end } = dayWindow("2026-10-29", "Asia/Kolkata");

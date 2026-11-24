@@ -2,7 +2,7 @@ import { DateTime } from "luxon";
 
 export function dayWindow(date, zone) {
   const d = DateTime.fromISO(date, { zone });
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !d.isValid)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !d.isValid || d.toISODate() !== date)
     throw new Error("Invalid date or time zone");
   return {
     start: d.startOf("day").toMillis(),
@@ -23,6 +23,24 @@ export function unionSeconds(intervals, start = -Infinity, end = Infinity) {
   return total / 1000;
 }
 
+function sortedUnionSeconds(sortedPairs, start = -Infinity, end = Infinity) {
+  let total = 0,
+    edge = -Infinity;
+  for (let i = 0; i < sortedPairs.length; i++) {
+    const a = sortedPairs[i][0];
+    if (a >= end) break;
+    const b = sortedPairs[i][1];
+    if (b <= start) continue;
+    const cs = a < start ? start : a;
+    const ce = b > end ? end : b;
+    if (ce > cs) {
+      total += Math.max(0, ce - Math.max(cs, edge));
+      edge = Math.max(edge, ce);
+    }
+  }
+  return total / 1000;
+}
+
 export function median(values) {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -36,17 +54,18 @@ export function activityReport(events, start, end, zone, extra = {}) {
   const intervals = events.filter((e) => e.type === "interval");
   const active = intervals.filter((e) => e.state === "active");
   const idle = intervals.filter((e) => e.state === "idle");
+  const byStart = (x, y) => x[0] - y[0];
   const pairs = (es) => es.map((e) => [+new Date(e.start), +new Date(e.end)]);
-  const allPairs = pairs(intervals);
-  const activePairs = pairs(active);
-  const idlePairs = pairs(idle);
+  const allPairs = pairs(intervals).sort(byStart);
+  const activePairsRaw = pairs(active);
+  const activePairs = [...activePairsRaw].sort(byStart);
+  const idlePairs = pairs(idle).sort(byStart);
   const switchTimes = events
     .filter((e) => e.type === "tab_switch")
     .map((e) => +new Date(e.at));
-  const focusPairs = (extra.segments || []).map((s) => [
-    +new Date(s.started_at ?? s[0]),
-    +new Date(s.ended_at ?? s[1]),
-  ]);
+  const focusPairs = (extra.segments || [])
+    .map((s) => [+new Date(s.started_at ?? s[0]), +new Date(s.ended_at ?? s[1])])
+    .sort(byStart);
   const checkins = extra.checkins || [];
 
   const hours = [];
@@ -67,9 +86,9 @@ export function activityReport(events, start, end, zone, extra = {}) {
     hours.push({
       start: new Date(t).toISOString(),
       label: DateTime.fromMillis(t, { zone }).toFormat("HH:mm ZZ"),
-      activeSeconds: unionSeconds(activePairs, t, until),
-      observedSeconds: unionSeconds(allPairs, t, until),
-      focusSeconds: unionSeconds(focusPairs, t, until),
+      activeSeconds: sortedUnionSeconds(activePairs, t, until),
+      observedSeconds: sortedUnionSeconds(allPairs, t, until),
+      focusSeconds: sortedUnionSeconds(focusPairs, t, until),
       switches: switchTimes.filter((at) => at >= t && at < until).length,
       checkinCount: hourCheckins.length,
       avgFocus: avg("focus"),
@@ -82,7 +101,7 @@ export function activityReport(events, start, end, zone, extra = {}) {
   const categories = {};
   for (let i = 0; i < active.length; i++) {
     const e = active[i];
-    const range = activePairs[i];
+    const range = activePairsRaw[i];
     const domKey = e.domain;
     domains[domKey] ??= [];
     domains[domKey].push(range);
@@ -93,21 +112,21 @@ export function activityReport(events, start, end, zone, extra = {}) {
   }
 
   return {
-    observedSeconds: unionSeconds(allPairs, start, end),
-    activeSeconds: unionSeconds(activePairs, start, end),
-    idleSeconds: unionSeconds(idlePairs, start, end),
+    observedSeconds: sortedUnionSeconds(allPairs, start, end),
+    activeSeconds: sortedUnionSeconds(activePairs, start, end),
+    idleSeconds: sortedUnionSeconds(idlePairs, start, end),
     tabSwitches: switchTimes.filter((at) => at >= start && at < end).length,
     hours,
     domains: Object.entries(domains)
       .map(([domain, ranges]) => ({
         domain,
-        seconds: unionSeconds(ranges, start, end),
+        seconds: sortedUnionSeconds(ranges.sort(byStart), start, end),
       }))
       .sort((a, b) => b.seconds - a.seconds),
     categories: Object.entries(categories)
       .map(([category, ranges]) => ({
         category,
-        seconds: unionSeconds(ranges, start, end),
+        seconds: sortedUnionSeconds(ranges.sort(byStart), start, end),
       }))
       .sort((a, b) => b.seconds - a.seconds),
     coverage: null,

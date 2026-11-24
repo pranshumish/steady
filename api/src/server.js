@@ -300,11 +300,18 @@ app.delete("/api/account", auth, authLimit, async (req, res) => {
       password: "Password is incorrect",
     });
   }
-  const deleted = await transaction(req.user.id, async (c) =>
-    eraseAccount(c, req.user),
-  );
-  await events.deleteMany({ userId: req.user.id });
-  if (journal) await journal.deleteMany({ userId: req.user.id });
+  const deleted = await transaction(req.user.id, async (c) => {
+    const counts = await eraseAccount(c, req.user);
+    counts.mongo_activity_events = (
+      await events.deleteMany({ userId: req.user.id })
+    ).deletedCount;
+    if (journal) {
+      counts.mongo_task_event_mirror = (
+        await journal.deleteMany({ userId: req.user.id })
+      ).deletedCount;
+    }
+    return counts;
+  });
   res.clearCookie("steady_session", { path: "/" });
   res.json({ ok: true, deleted });
 });
@@ -772,7 +779,7 @@ app.post("/api/extension/consent", device, async (req, res) => {
     } = await c.query("SELECT * FROM devices WHERE id=$1 FOR UPDATE", [
       req.device.id,
     ]);
-    if (current.revoked_at || +current.expires_at < Date.now())
+    if (!current || current.revoked_at || +current.expires_at < Date.now())
       throw fail(401, "Device token revoked");
     const {
       rows: [d],
@@ -846,7 +853,8 @@ app.post("/api/extension/events", device, async (req, res) => {
     } = await c.query("SELECT * FROM devices WHERE id=$1 FOR UPDATE", [
       req.device.id,
     ]);
-    if (d.revoked_at || +d.expires_at < now) throw fail(401, "Device revoked");
+    if (!d || d.revoked_at || +d.expires_at < now)
+      throw fail(401, "Device revoked");
     if (!d.tracking_enabled || d.consent_epoch !== b.epoch)
       throw fail(409, "Tracking consent changed; discard queued events");
     const ids = [];
